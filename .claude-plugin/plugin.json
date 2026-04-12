@@ -1,0 +1,22 @@
+{
+  "name": "unstoppable-domains",
+  "description": "Search, register, and manage domain names with Unstoppable Domains. Skills for DNS configuration, marketplace listings, domain purchasing, and portfolio management via MCP server, CLI, and REST API.",
+  "version": "1.0.0",
+  "author": {
+    "name": "Unstoppable Domains",
+    "email": "support@unstoppabledomains.com"
+  },
+  "homepage": "https://unstoppabledomains.com",
+  "repository": "https://github.com/unstoppabledomains/skills",
+  "license": "MIT",
+  "keywords": [
+    "domains",
+    "dns",
+    "domain-registration",
+    "domain-marketplace",
+    "mcp",
+    "unstoppable-domains",
+    "domain-management",
+    "reseller-api"
+  ]
+}
