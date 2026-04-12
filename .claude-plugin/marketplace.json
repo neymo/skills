@@ -1,0 +1,23 @@
+{
+  "name": "unstoppable-domains-skills",
+  "owner": {
+    "name": "Unstoppable Domains",
+    "email": "support@unstoppabledomains.com"
+  },
+  "metadata": {
+    "description": "Agent skills for searching, registering, and managing domain names with Unstoppable Domains via MCP server, CLI, and REST API",
+    "version": "1.0.0"
+  },
+  "plugins": [
+    {
+      "name": "unstoppable-domains",
+      "description": "Domain registration, DNS management, marketplace operations, AI landing pages, and reseller API integration via Unstoppable Domains MCP server, CLI, and REST API.",
+      "source": "./",
+      "skills": [
+        "./skills/setup",
+        "./skills/domains",
+        "./skills/reseller-api"
+      ]
+    }
+  ]
+}
