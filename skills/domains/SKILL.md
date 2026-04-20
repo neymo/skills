@@ -27,6 +27,26 @@ Complete reference for the Unstoppable Domains User API via MCP server, CLI, or 
 
 `ud_domains_search` accepts up to **10 queries** and **5 TLDs** per call (defaults: com, net, org, ai, io). `ud_tld_list` shows all supported TLDs. For pending-delete/expiring inventory, use `ud_expireds_list` (up to 500/call).
 
+### Domain Naming Principles
+
+When suggesting domain names to a user, apply these rules to every candidate:
+
+**Hard blockers (never propose these):**
+
+- **No hyphens** — single-dash (`brew-haven.com`), multi-dash (`the-best-coffee-shop.com`), trailing or leading dash. Hyphens signal low quality and hurt type-in recall.
+- **No digits** — no digit substitution (`4you`, `2fast`), no suffix numbers (`coffee24`, `domain365`), no leet (`c0ffee`). Digit names read as spammy and date the brand.
+- **No trademark-adjacent names** — avoid names one letter off a well-known brand (`gooogle`, `amaz0n`), even if technically available. Registrar support will field takedown complaints.
+- If the only available candidate is hyphenated, numeric, or trademark-adjacent, discard it. Re-run the search with a different seed or TLD.
+
+**Quality guidelines:**
+
+- **Length**: prefer 3–12 characters in the SLD (second-level domain). Sub-15 is passable; longer loses memorability.
+- **Pronounceability**: should be sayable in a single beat. Test: can you spell it to a stranger over a phone call?
+- **Brandability over description**: prefer invented-but-pronounceable (`brewhaven`) or meaningful compounds (`cozycoffee`) over literal descriptions (`coffeeshopportland`). Descriptive names don't scale with the brand.
+- **TLD coherence**: match TLD to pitch. `.store` for e-commerce, `.io` for tech, `.design` for studios. A `.biz` on a tech startup reads as low quality.
+
+Good examples: `brewhaven.com`, `cozycoffee.co`, `roasted.studio`. Bad examples: `brew-haven.com`, `brew2haven.com`, `coffeeshopindowntownportland.com`.
+
 ### Cart Tool Selection (Critical)
 
 After searching, use `marketplace.source` and `marketplace.status` to pick the correct cart tool:
