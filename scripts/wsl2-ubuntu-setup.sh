@@ -12,7 +12,7 @@
 #     (build toolchains, languages, CLI utilities, containers helpers, ...)
 #   * Installs the XFCE desktop environment
 #   * Sets up remote access:
-#       - RDP  via xrdp        (default port 3390)
+#       - RDP  via xrdp        (default port 3339)
 #       - VNC  via TigerVNC    (default display :1  -> port 5901)
 #     with the usual WSL fixes (polkit prompts, dbus, xsession, ...)
 #
@@ -37,7 +37,7 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 # Defaults / configuration
 # ---------------------------------------------------------------------------
-RDP_PORT="${RDP_PORT:-3390}"      # xrdp listens here (3389 clashes w/ Windows RDP under mirrored networking)
+RDP_PORT="${RDP_PORT:-3339}"      # xrdp listens here (avoids clashing with Windows' own 3389)
 VNC_DISPLAY="${VNC_DISPLAY:-1}"   # VNC display number -> TCP port 5900 + N
 VNC_GEOMETRY="${VNC_GEOMETRY:-1920x1080}"
 DESKTOP_SESSION_CMD="startxfce4"
