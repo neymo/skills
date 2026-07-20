@@ -38,11 +38,11 @@ Restart-Computer
 ## What It Does
 
 The script is grouped into categories. The **default baseline** applies the
-first 15 (including `BackdoorScan`, which is read-only); `HighImpact` is opt-in.
+first 16 (including `BackdoorScan`, which is read-only); `HighImpact` is opt-in.
 
 | Category | Hardening applied |
 |---|---|
-| `Defender` | Real-time/behavior/cloud protection, PUA, network protection, block-at-first-sight, high cloud block level, and 15 Attack Surface Reduction (ASR) rules (LSASS theft, Office child processes, USB, ransomware, etc.) |
+| `Defender` | Real-time/behavior/cloud protection, PUA, network protection, block-at-first-sight, high cloud block level, 15 Attack Surface Reduction (ASR) rules (LSASS theft, Office child processes, USB, ransomware, etc.); **updates definitions now**, then schedules a daily quick scan + weekly full scan, catch-up scans, 8-hour signature interval, 50% CPU cap, and 30-day quarantine retention |
 | `Firewall` | Enables Domain/Public/Private profiles, default-deny inbound, block logging |
 | `SmartScreen` | App + Edge SmartScreen set to block |
 | `UAC` | Consent prompt on secure desktop, admin approval mode, installer detection |
@@ -57,6 +57,7 @@ first 15 (including `BackdoorScan`, which is read-only); `HighImpact` is opt-in.
 | `Hijacking` | DLL search-order hardening (SafeDllSearchMode, block DLL loads from CWD/WebDAV), PrintNightmare driver-install lockdown, disables AutoLogon, enforces Ctrl+Alt+Del, hides last user, disables the Remote Registry service |
 | `PhoneTethering` | Disables Mobile Hotspot / Wi-Fi internet sharing, Internet Connection Sharing (ICS) service + UI, network bridging, and auto-connect to suggested open hotspots |
 | `BackdoorScan` | **Read-only detection — makes no changes.** Scans for common persistence/backdoor markers: sticky-keys/accessibility IFEO "debugger" backdoors, any IFEO debuggers, Winlogon Shell/Userinit tampering, Run/RunOnce autostarts, rogue scheduled tasks (encoded PowerShell, mshta, LOLBins), services running from Temp/AppData/Public, WMI event-subscription persistence, local admin membership, hosts-file entries, and Startup-folder items. Writes `backdoor-scan-report.txt` and flags suspicious findings. |
+| `ScheduledTasks` | Registers recurring maintenance tasks (run as SYSTEM) under Task Scheduler folder `\Windows11-Hardening\`: daily Defender signature update, weekly Defender full scan, and a weekly read-only `BackdoorScan` (re-runs this script). Idempotent (`-Force`). |
 | `HighImpact` | **Opt-in.** Controlled Folder Access (ransomware) + Exploit Protection system mitigations (DEP/ASLR/SEHOP). Can break some apps — review first. |
 
 ## Common Invocations
