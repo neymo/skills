@@ -60,7 +60,12 @@ die()  { printf '%s[xx]%s %s\n' "$c_red"    "$c_reset" "$*" >&2; exit 1; }
 # ---------------------------------------------------------------------------
 # Arg parsing
 # ---------------------------------------------------------------------------
-print_help() { sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'; exit 0; }
+# Print the leading comment banner (from line 2 up to the first non-comment
+# line) as help text, stripping the leading "# ". Robust to line-number drift.
+print_help() {
+  awk 'NR==1 {next} /^#/ {sub(/^#[[:space:]]?/, ""); print; next} {exit}' "$0"
+  exit 0
+}
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -147,6 +152,21 @@ appendWindowsPath=true
 [network]
 generateResolvConf=true
 EOF
+
+  # Preserve any pre-existing wsl.conf: skip if identical, otherwise back it up
+  # before overwriting so the user's custom settings are never silently lost.
+  if [[ -f /etc/wsl.conf ]]; then
+    if $SUDO cmp -s "$tmp" /etc/wsl.conf; then
+      rm -f "$tmp"
+      ok "wsl.conf already up to date"
+      return 0
+    fi
+    local backup
+    backup="/etc/wsl.conf.bak.$(date +%Y%m%d%H%M%S)"
+    $SUDO cp -a /etc/wsl.conf "$backup"
+    warn "existing /etc/wsl.conf backed up to $backup (review & merge custom settings)"
+  fi
+
   $SUDO install -m 0644 "$tmp" /etc/wsl.conf
   rm -f "$tmp"
   ok "wsl.conf written (requires 'wsl --shutdown' to apply)"
@@ -246,9 +266,24 @@ install_desktop() {
 # and network-manager prompts that spam every RDP/VNC login on WSL.
 install_polkit_fixes() {
   log "Applying polkit fixes for headless desktop sessions"
-  local rule=/etc/polkit-1/localauthority/50-local.d/45-allow-colord.pkla
-  $SUDO mkdir -p "$(dirname "$rule")"
-  cat <<'EOF' | $SUDO tee "$rule" >/dev/null
+
+  # Modern polkit (>= 0.106, i.e. Ubuntu 22.04+/24.04) uses JavaScript rules in
+  # /etc/polkit-1/rules.d and ignores the legacy .pkla local-authority files.
+  local jsrule=/etc/polkit-1/rules.d/45-allow-colord.rules
+  $SUDO mkdir -p "$(dirname "$jsrule")"
+  cat <<'EOF' | $SUDO tee "$jsrule" >/dev/null
+// Allow color-manager actions without a password prompt (headless RDP/VNC).
+polkit.addRule(function(action, subject) {
+    if (action.id.indexOf("org.freedesktop.color-manager.") === 0) {
+        return polkit.Result.YES;
+    }
+});
+EOF
+
+  # Legacy pkla for older polkit (< 0.106) / distros still shipping pklocalauthority.
+  local pkla=/etc/polkit-1/localauthority/50-local.d/45-allow-colord.pkla
+  $SUDO mkdir -p "$(dirname "$pkla")"
+  cat <<'EOF' | $SUDO tee "$pkla" >/dev/null
 [Allow Colord all Users]
 Identity=unix-user:*
 Action=org.freedesktop.color-manager.create-device;org.freedesktop.color-manager.create-profile;org.freedesktop.color-manager.delete-device;org.freedesktop.color-manager.delete-profile;org.freedesktop.color-manager.modify-device;org.freedesktop.color-manager.modify-profile
@@ -256,7 +291,7 @@ ResultAny=no
 ResultInactive=no
 ResultActive=yes
 EOF
-  ok "polkit color-profile prompt suppressed"
+  ok "polkit color-profile prompt suppressed (JS rule + legacy pkla)"
 }
 
 # ---------------------------------------------------------------------------
