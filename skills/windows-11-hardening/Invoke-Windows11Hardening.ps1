@@ -36,6 +36,14 @@
       RemoteAccess    Disables Remote Assistance; requires NLA if RDP is on.
       Audit           Enables key security audit policies.
       Privacy         Reduces diagnostic-data/telemetry and advertising ID.
+      Hijacking       DLL search-order, PrintNightmare, AutoLogon, and
+                      RemoteRegistry hardening against hijacking vectors.
+      PhoneTethering  Disables Mobile Hotspot, Internet Connection Sharing,
+                      and network bridging.
+      BackdoorScan    READ-ONLY. Detects common persistence/backdoor markers
+                      (sticky-keys/IFEO, Run keys, rogue tasks/services, WMI
+                      persistence, hidden admins, hosts tampering) and writes
+                      a report. Makes no changes.
       HighImpact      Ransomware Controlled Folder Access + Exploit Protection
                       system mitigations. Can break some apps - review first.
 
@@ -72,10 +80,10 @@
 param(
     [ValidateSet('Defender', 'Firewall', 'SmartScreen', 'UAC', 'Updates', 'Network',
         'Credentials', 'PowerShellLog', 'AutoRun', 'RemoteAccess', 'Audit', 'Privacy',
-        'HighImpact', 'All')]
+        'Hijacking', 'PhoneTethering', 'BackdoorScan', 'HighImpact', 'All')]
     [string[]]$Category = @('Defender', 'Firewall', 'SmartScreen', 'UAC', 'Updates',
         'Network', 'Credentials', 'PowerShellLog', 'AutoRun', 'RemoteAccess', 'Audit',
-        'Privacy'),
+        'Privacy', 'Hijacking', 'PhoneTethering', 'BackdoorScan'),
 
     [string]$BackupPath = (Join-Path $env:SystemDrive ("Windows11-Hardening-Backup\{0:yyyyMMdd-HHmmss}" -f (Get-Date))),
 
@@ -158,6 +166,16 @@ function Set-RegValue {
         New-ItemProperty -Path $Path -Name $Name -Value $Value -PropertyType $Type -Force | Out-Null
         Write-Step "$Path\$Name = $Value"
     }
+}
+
+function Get-RegVal {
+    # StrictMode-safe registry read. Returns $null when the key or value is absent
+    # (never throws PropertyNotFoundException on missing values).
+    param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][string]$Name)
+    if (-not (Test-Path $Path)) { return $null }
+    $item = Get-ItemProperty -Path $Path -Name $Name -ErrorAction SilentlyContinue
+    if ($null -ne $item -and ($item.PSObject.Properties.Name -contains $Name)) { return $item.$Name }
+    return $null
 }
 
 function Invoke-Native {
@@ -409,6 +427,178 @@ function Set-PrivacyHardening {
     Set-RegValue -Path 'HKLM:\SOFTWARE\Microsoft\PolicyManager\default\WiFi\AllowWiFiHotSpotReporting' -Name 'value' -Value 0
 }
 
+function Set-HijackingHardening {
+    [CmdletBinding(SupportsShouldProcess = $true)]
+    param()
+    Write-Info 'Hijacking protection (DLL / print / logon / remote registry)'
+    # DLL search-order hijacking: safe search mode on, block DLL loads from CWD/WebDAV
+    $sm = 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager'
+    Set-RegValue -Path $sm -Name 'SafeDllSearchMode' -Value 1
+    Set-RegValue -Path $sm -Name 'CWDIllegalInDllSearch' -Value 2
+    # Protected Process / anti-DLL-injection for services already covered by RunAsPPL.
+    # PrintNightmare (spooler driver hijacking): only admins install drivers, no silent elevation
+    $pp = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers\PointAndPrint'
+    Set-RegValue -Path $pp -Name 'RestrictDriverInstallationToAdministrators' -Value 1
+    Set-RegValue -Path $pp -Name 'NoWarningNoElevationOnInstall' -Value 0
+    Set-RegValue -Path $pp -Name 'UpdatePromptSettings' -Value 0
+    # Disable automatic logon (credential/session hijacking convenience)
+    $wl = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
+    Set-RegValue -Path $wl -Name 'AutoAdminLogon' -Value '0' -Type String
+    # Session hijacking / shatter: enforce Ctrl+Alt+Del at logon, hide last user
+    $pol = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+    Set-RegValue -Path $pol -Name 'DisableCAD' -Value 0
+    Set-RegValue -Path $pol -Name 'DontDisplayLastUserName' -Value 1
+    # Disable the Remote Registry service (remote registry hijacking)
+    Invoke-Native 'Disable Remote Registry service' {
+        if (Get-Service -Name RemoteRegistry -ErrorAction SilentlyContinue) {
+            Stop-Service -Name RemoteRegistry -Force -ErrorAction SilentlyContinue
+            Set-Service -Name RemoteRegistry -StartupType Disabled
+        }
+    }
+}
+
+function Set-PhoneTetheringHardening {
+    [CmdletBinding(SupportsShouldProcess = $true)]
+    param()
+    Write-Info 'Phone tethering / hotspot protection'
+    # Prohibit Internet Connection Sharing (ICS) and network bridge UI
+    $nc = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Network Connections'
+    Set-RegValue -Path $nc -Name 'NC_ShowSharedAccessUI' -Value 0
+    Set-RegValue -Path $nc -Name 'NC_AllowNetBridge_NLA' -Value 0
+    # Disable Mobile Hotspot (Wi-Fi internet sharing) via policy CSP mirror
+    Set-RegValue -Path 'HKLM:\SOFTWARE\Microsoft\PolicyManager\default\WiFi\AllowInternetSharing' -Name 'value' -Value 0
+    # Disable the Internet Connection Sharing (SharedAccess) service
+    Invoke-Native 'Disable Internet Connection Sharing (SharedAccess) service' {
+        if (Get-Service -Name SharedAccess -ErrorAction SilentlyContinue) {
+            Stop-Service -Name SharedAccess -Force -ErrorAction SilentlyContinue
+            Set-Service -Name SharedAccess -StartupType Disabled
+        }
+    }
+    # Disable auto-connect to suggested open hotspots
+    Set-RegValue -Path 'HKLM:\SOFTWARE\Microsoft\WcmSvc\wifinetworkmanager\config' -Name 'AutoConnectAllowedOEM' -Value 0
+}
+
+function Invoke-BackdoorScan {
+    [CmdletBinding()]
+    param()
+    Write-Info 'Backdoor / persistence detection (READ-ONLY, no changes made)'
+    $report = Join-Path $BackupPath 'backdoor-scan-report.txt'
+    $findings = New-Object System.Collections.Generic.List[string]
+
+    function Add-Finding {
+        param([string]$Category, [string]$Detail, [ValidateSet('Info', 'Suspicious')][string]$Level = 'Suspicious')
+        $line = "[$Level] $Category :: $Detail"
+        $findings.Add($line)
+        if ($Level -eq 'Suspicious') { Write-Warn2 $line } else { Write-Step $line }
+    }
+
+    # 1. Sticky-keys / accessibility IFEO "debugger" backdoors + any IFEO debugger
+    $ifeo = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options'
+    if (Test-Path $ifeo) {
+        Get-ChildItem $ifeo -ErrorAction SilentlyContinue | ForEach-Object {
+            $dbg = Get-RegVal $_.PSPath 'Debugger'
+            if ($dbg) { Add-Finding 'IFEO-Debugger' "$($_.PSChildName) -> $dbg" }
+        }
+    }
+
+    # 2. Winlogon Shell / Userinit tampering
+    $wlk = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
+    $shell = Get-RegVal $wlk 'Shell'
+    if ($shell -and $shell -ne 'explorer.exe') { Add-Finding 'Winlogon-Shell' $shell }
+    $userinit = Get-RegVal $wlk 'Userinit'
+    if ($userinit -and $userinit -notmatch '^C:\\Windows\\system32\\userinit\.exe,?$') { Add-Finding 'Winlogon-Userinit' $userinit }
+
+    # 3. Run / RunOnce autostart entries
+    $runKeys = @(
+        'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run',
+        'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce',
+        'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run',
+        'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce'
+    )
+    foreach ($rk in $runKeys) {
+        if (-not (Test-Path $rk)) { continue }
+        $props = Get-ItemProperty $rk -ErrorAction SilentlyContinue
+        if ($null -eq $props) { continue }
+        foreach ($p in $props.PSObject.Properties) {
+            if ($p.Name -like 'PS*') { continue }
+            $val = "$($p.Value)"
+            $level = if ($val -match '(?i)powershell.*-enc|mshta|rundll32|\\Temp\\|\\AppData\\.*\.(exe|ps1|vbs|bat|scr)|certutil|bitsadmin') { 'Suspicious' } else { 'Info' }
+            Add-Finding 'Autostart-Run' "$rk\$($p.Name) = $val" $level
+        }
+    }
+
+    # 4. Scheduled tasks with suspicious actions
+    if (Get-Command Get-ScheduledTask -ErrorAction SilentlyContinue) {
+        Get-ScheduledTask -ErrorAction SilentlyContinue | ForEach-Object {
+            $actions = $_.Actions | Where-Object { $_.PSObject.Properties.Name -contains 'Execute' -and $_.Execute }
+            foreach ($a in $actions) {
+                $cmd = "$($a.Execute) $($a.Arguments)"
+                if ($cmd -match '(?i)powershell.*-enc|-e[nc]* [A-Za-z0-9+/=]{40,}|mshta|\\Temp\\|\\AppData\\|certutil|bitsadmin|wscript|cscript') {
+                    Add-Finding 'ScheduledTask' "$($_.TaskPath)$($_.TaskName): $cmd"
+                }
+            }
+        }
+    }
+
+    # 5. Services whose binary lives outside standard locations or wraps a shell
+    Get-CimInstance Win32_Service -ErrorAction SilentlyContinue | ForEach-Object {
+        $path = $_.PathName
+        if (-not $path) { return }
+        if ($path -match '(?i)\\Temp\\|\\AppData\\|\\Users\\Public\\|powershell|cmd\.exe /c|rundll32.*javascript') {
+            Add-Finding 'Service' "$($_.Name): $path"
+        }
+    }
+
+    # 6. WMI persistent event subscriptions
+    try {
+        $consumers = Get-CimInstance -Namespace root\subscription -ClassName __EventConsumer -ErrorAction SilentlyContinue
+        foreach ($c in $consumers) {
+            Add-Finding 'WMI-Persistence' "$($c.CreationClassName): $($c.Name)"
+        }
+    }
+    catch { Write-Verbose 'WMI subscription namespace not queryable.' }
+
+    # 7. Local Administrators group membership
+    try {
+        $admins = Get-LocalGroupMember -Group 'Administrators' -ErrorAction Stop
+        foreach ($m in $admins) { Add-Finding 'LocalAdmin' "$($m.Name) ($($m.ObjectClass))" 'Info' }
+    }
+    catch { Write-Verbose 'Could not enumerate local Administrators.' }
+
+    # 8. hosts file non-default (non-comment, non-loopback) entries
+    $hosts = "$env:SystemRoot\System32\drivers\etc\hosts"
+    if (Test-Path $hosts) {
+        Get-Content $hosts -ErrorAction SilentlyContinue | Where-Object {
+            $_ -and $_ -notmatch '^\s*#' -and $_ -notmatch '^\s*(127\.0\.0\.1|::1)\s'
+        } | ForEach-Object { Add-Finding 'HostsFile' $_.Trim() }
+    }
+
+    # 9. Startup folder contents
+    $startupDirs = @(
+        "$env:ProgramData\Microsoft\Windows\Start Menu\Programs\Startup",
+        "$env:AppData\Microsoft\Windows\Start Menu\Programs\Startup"
+    )
+    foreach ($d in $startupDirs) {
+        if (Test-Path $d) {
+            Get-ChildItem $d -File -ErrorAction SilentlyContinue | ForEach-Object {
+                Add-Finding 'StartupFolder' $_.FullName 'Info'
+            }
+        }
+    }
+
+    $suspicious = @($findings | Where-Object { $_ -like '`[Suspicious`]*' })
+    Write-Info ("Backdoor scan complete: {0} item(s), {1} flagged suspicious." -f $findings.Count, $suspicious.Count)
+    if ($suspicious.Count -gt 0) {
+        Write-Warn2 'Review the SUSPICIOUS items above. They are not proof of compromise, but warrant inspection.'
+    }
+    if ($WhatIfPreference) { return }
+    try {
+        "Backdoor / persistence scan - $(Get-Date -Format o)`r`n" + ($findings -join "`r`n") | Set-Content -Path $report -Encoding UTF8
+        Write-Info "Full report written to: $report"
+    }
+    catch { Write-Warn2 "Could not write scan report: $($_.Exception.Message)" }
+}
+
 function Set-HighImpactHardening {
     [CmdletBinding(SupportsShouldProcess = $true)]
     param()
@@ -474,19 +664,22 @@ if ($WhatIfPreference) { Write-Warn2 'WHATIF MODE - no changes will be applied.'
 Write-Console ''
 
 $map = [ordered]@{
-    Defender      = ${function:Set-DefenderHardening}
-    Firewall      = ${function:Set-FirewallHardening}
-    SmartScreen   = ${function:Set-SmartScreenHardening}
-    UAC           = ${function:Set-UACHardening}
-    Updates       = ${function:Set-UpdatesHardening}
-    Network       = ${function:Set-NetworkHardening}
-    Credentials   = ${function:Set-CredentialHardening}
-    PowerShellLog = ${function:Set-PowerShellLogging}
-    AutoRun       = ${function:Set-AutoRunHardening}
-    RemoteAccess  = ${function:Set-RemoteAccessHardening}
-    Audit         = ${function:Set-AuditHardening}
-    Privacy       = ${function:Set-PrivacyHardening}
-    HighImpact    = ${function:Set-HighImpactHardening}
+    Defender       = ${function:Set-DefenderHardening}
+    Firewall       = ${function:Set-FirewallHardening}
+    SmartScreen    = ${function:Set-SmartScreenHardening}
+    UAC            = ${function:Set-UACHardening}
+    Updates        = ${function:Set-UpdatesHardening}
+    Network        = ${function:Set-NetworkHardening}
+    Credentials    = ${function:Set-CredentialHardening}
+    PowerShellLog  = ${function:Set-PowerShellLogging}
+    AutoRun        = ${function:Set-AutoRunHardening}
+    RemoteAccess   = ${function:Set-RemoteAccessHardening}
+    Audit          = ${function:Set-AuditHardening}
+    Privacy        = ${function:Set-PrivacyHardening}
+    Hijacking      = ${function:Set-HijackingHardening}
+    PhoneTethering = ${function:Set-PhoneTetheringHardening}
+    BackdoorScan   = ${function:Invoke-BackdoorScan}
+    HighImpact     = ${function:Set-HighImpactHardening}
 }
 
 foreach ($name in $map.Keys) {

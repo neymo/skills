@@ -38,7 +38,7 @@ Restart-Computer
 ## What It Does
 
 The script is grouped into categories. The **default baseline** applies the
-first 12; `HighImpact` is opt-in.
+first 15 (including `BackdoorScan`, which is read-only); `HighImpact` is opt-in.
 
 | Category | Hardening applied |
 |---|---|
@@ -54,6 +54,9 @@ first 12; `HighImpact` is opt-in.
 | `RemoteAccess` | Disables Remote Assistance; if RDP is on, enforces NLA + high encryption (does not silently disable RDP) |
 | `Audit` | Enables key logon/account/process-creation audit subcategories + command line in 4688 events |
 | `Privacy` | Diagnostic data to Required, disables advertising ID, consumer features, location, Wi-Fi Sense |
+| `Hijacking` | DLL search-order hardening (SafeDllSearchMode, block DLL loads from CWD/WebDAV), PrintNightmare driver-install lockdown, disables AutoLogon, enforces Ctrl+Alt+Del, hides last user, disables the Remote Registry service |
+| `PhoneTethering` | Disables Mobile Hotspot / Wi-Fi internet sharing, Internet Connection Sharing (ICS) service + UI, network bridging, and auto-connect to suggested open hotspots |
+| `BackdoorScan` | **Read-only detection — makes no changes.** Scans for common persistence/backdoor markers: sticky-keys/accessibility IFEO "debugger" backdoors, any IFEO debuggers, Winlogon Shell/Userinit tampering, Run/RunOnce autostarts, rogue scheduled tasks (encoded PowerShell, mshta, LOLBins), services running from Temp/AppData/Public, WMI event-subscription persistence, local admin membership, hosts-file entries, and Startup-folder items. Writes `backdoor-scan-report.txt` and flags suspicious findings. |
 | `HighImpact` | **Opt-in.** Controlled Folder Access (ransomware) + Exploit Protection system mitigations (DEP/ASLR/SEHOP). Can break some apps — review first. |
 
 ## Common Invocations
@@ -70,7 +73,14 @@ first 12; `HighImpact` is opt-in.
 
 # Preview a specific category
 .\Invoke-Windows11Hardening.ps1 -Category HighImpact -WhatIf
+
+# Just run the read-only backdoor/persistence scan (changes nothing)
+.\Invoke-Windows11Hardening.ps1 -Category BackdoorScan
 ```
+
+`BackdoorScan` reports **indicators**, not proof of compromise — many entries
+(e.g. legitimate Run keys or admin accounts) are normal. Review the items marked
+`[Suspicious]` and the full report at `<BackupPath>\backdoor-scan-report.txt`.
 
 ## Safety & Rollback
 
