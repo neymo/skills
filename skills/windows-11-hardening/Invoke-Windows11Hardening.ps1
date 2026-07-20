@@ -44,6 +44,8 @@
                       (sticky-keys/IFEO, Run keys, rogue tasks/services, WMI
                       persistence, hidden admins, hosts tampering) and writes
                       a report. Makes no changes.
+      ScheduledTasks  Registers recurring maintenance tasks (daily Defender
+                      signature update, weekly full scan, weekly backdoor scan).
       HighImpact      Ransomware Controlled Folder Access + Exploit Protection
                       system mitigations. Can break some apps - review first.
 
@@ -80,10 +82,11 @@
 param(
     [ValidateSet('Defender', 'Firewall', 'SmartScreen', 'UAC', 'Updates', 'Network',
         'Credentials', 'PowerShellLog', 'AutoRun', 'RemoteAccess', 'Audit', 'Privacy',
-        'Hijacking', 'PhoneTethering', 'BackdoorScan', 'HighImpact', 'All')]
+        'Hijacking', 'PhoneTethering', 'BackdoorScan', 'ScheduledTasks',
+        'HighImpact', 'All')]
     [string[]]$Category = @('Defender', 'Firewall', 'SmartScreen', 'UAC', 'Updates',
         'Network', 'Credentials', 'PowerShellLog', 'AutoRun', 'RemoteAccess', 'Audit',
-        'Privacy', 'Hijacking', 'PhoneTethering', 'BackdoorScan'),
+        'Privacy', 'Hijacking', 'PhoneTethering', 'BackdoorScan', 'ScheduledTasks'),
 
     [string]$BackupPath = (Join-Path $env:SystemDrive ("Windows11-Hardening-Backup\{0:yyyyMMdd-HHmmss}" -f (Get-Date))),
 
@@ -247,6 +250,29 @@ function Set-DefenderHardening {
         Invoke-Native "ASR: $($asr[$guid])" {
             Add-MpPreference -AttackSurfaceReductionRules_Ids $guid -AttackSurfaceReductionRules_Actions Enabled
         }.GetNewClosure()
+    }
+
+    # --- Definition update + scan scheduling ("Defender upgrade") ---
+    Invoke-Native 'Update platform/engine/security-intelligence definitions now' {
+        if (Get-Command Update-MpSignature -ErrorAction SilentlyContinue) { Update-MpSignature -ErrorAction Stop }
+    }
+    Invoke-Native 'Check for new definitions before every scheduled scan' { Set-MpPreference -CheckForSignaturesBeforeRunningScan $true }
+    Invoke-Native 'Definition update interval: every 8 hours' { Set-MpPreference -SignatureUpdateInterval 8 }
+    Invoke-Native 'Run missed (catch-up) quick and full scans' {
+        Set-MpPreference -DisableCatchupQuickScan $false -DisableCatchupFullScan $false
+    }
+    Invoke-Native 'Daily quick scan at 02:00' {
+        Set-MpPreference -ScanScheduleQuickScanTime ([TimeSpan]'02:00:00')
+    }
+    Invoke-Native 'Weekly scheduled full scan (Sunday 03:00)' {
+        Set-MpPreference -ScanParameters FullScan -ScanScheduleDay Sunday -ScanScheduleTime ([TimeSpan]'03:00:00')
+    }
+    Invoke-Native 'Cap scan CPU usage at 50%' { Set-MpPreference -ScanAvgCPULoadFactor 50 }
+    Invoke-Native 'Scan removable drives and email' {
+        Set-MpPreference -DisableRemovableDriveScanning $false -DisableEmailScanning $false -DisableArchiveScanning $false
+    }
+    Invoke-Native 'Compute file hashes; keep quarantine 30 days' {
+        Set-MpPreference -EnableFileHashComputation $true -QuarantinePurgeItemsAfterDelay 30
     }
 }
 
@@ -599,6 +625,64 @@ function Invoke-BackdoorScan {
     catch { Write-Warn2 "Could not write scan report: $($_.Exception.Message)" }
 }
 
+function Set-ScheduledTaskHardening {
+    [CmdletBinding(SupportsShouldProcess = $true)]
+    param()
+    Write-Info 'Scheduled maintenance tasks'
+    if (-not (Get-Command Register-ScheduledTask -ErrorAction SilentlyContinue)) {
+        Write-Warn2 'ScheduledTasks cmdlets unavailable. Skipping.'
+        return
+    }
+
+    $taskPath = '\Windows11-Hardening\'
+    $principal = New-ScheduledTaskPrincipal -UserId 'S-1-5-18' -RunLevel Highest  # LocalSystem
+    $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries `
+        -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Hours 3) `
+        -MultipleInstances IgnoreNew
+    $psExe = 'powershell.exe'
+
+    $tasks = [System.Collections.Generic.List[hashtable]]::new()
+    $tasks.Add(@{
+            Name        = 'Defender-SignatureUpdate'
+            Description = 'Daily Microsoft Defender security-intelligence update.'
+            Trigger     = New-ScheduledTaskTrigger -Daily -At '6:00AM'
+            Action      = New-ScheduledTaskAction -Execute $psExe -Argument '-NoProfile -NonInteractive -WindowStyle Hidden -Command "Update-MpSignature"'
+        })
+    $tasks.Add(@{
+            Name        = 'Defender-WeeklyFullScan'
+            Description = 'Weekly Microsoft Defender full scan.'
+            Trigger     = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Sunday -At '3:00AM'
+            Action      = New-ScheduledTaskAction -Execute $psExe -Argument '-NoProfile -NonInteractive -WindowStyle Hidden -Command "Start-MpScan -ScanType FullScan"'
+        })
+    # Weekly re-run of this script's read-only backdoor scan.
+    if ($PSCommandPath) {
+        $arg = ('-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File "{0}" -Category BackdoorScan -SkipRestorePoint' -f $PSCommandPath)
+        $tasks.Add(@{
+                Name        = 'Windows11-Hardening-BackdoorScan'
+                Description = 'Weekly read-only backdoor/persistence scan (Invoke-Windows11Hardening.ps1).'
+                Trigger     = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday -At '4:00AM'
+                Action      = New-ScheduledTaskAction -Execute $psExe -Argument $arg
+            })
+    }
+    else {
+        Write-Warn2 'Script path unknown (dot-sourced?); skipping the recurring backdoor-scan task.'
+    }
+
+    foreach ($t in $tasks) {
+        if ($PSCmdlet.ShouldProcess("$taskPath$($t.Name)", 'Register scheduled task')) {
+            try {
+                Register-ScheduledTask -TaskName $t.Name -TaskPath $taskPath -Description $t.Description `
+                    -Trigger $t.Trigger -Action $t.Action -Principal $principal -Settings $settings -Force | Out-Null
+                Write-Step "Scheduled task: $($t.Name)"
+            }
+            catch {
+                Write-Warn2 "Failed to register '$($t.Name)': $($_.Exception.Message)"
+            }
+        }
+    }
+    Write-Step "Tasks live under Task Scheduler folder '$taskPath' (run as SYSTEM)."
+}
+
 function Set-HighImpactHardening {
     [CmdletBinding(SupportsShouldProcess = $true)]
     param()
@@ -679,6 +763,7 @@ $map = [ordered]@{
     Hijacking      = ${function:Set-HijackingHardening}
     PhoneTethering = ${function:Set-PhoneTetheringHardening}
     BackdoorScan   = ${function:Invoke-BackdoorScan}
+    ScheduledTasks = ${function:Set-ScheduledTaskHardening}
     HighImpact     = ${function:Set-HighImpactHardening}
 }
 
