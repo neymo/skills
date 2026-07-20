@@ -119,14 +119,23 @@ cmd_pull_media() {
   local dir="${1:?usage: $0 pull-media <dir>}"
   require_authorized
   mkdir -p "$dir"
-  local folder
+  local folder pulled=0
   for folder in DCIM Pictures Download Movies Music Documents; do
     if adb shell "[ -d /sdcard/$folder ]" 2>/dev/null; then
       log "Pulling /sdcard/$folder ..."
-      adb pull -a "/sdcard/$folder" "$dir/" || warn "could not pull $folder"
+      if adb pull -a "/sdcard/$folder" "$dir/"; then
+        pulled=$((pulled + 1))
+      else
+        warn "could not pull $folder"
+      fi
     fi
   done
-  ok "Media copied under $dir/"
+  if [[ $pulled -gt 0 ]]; then
+    ok "Media copied under $dir/ ($pulled folder(s))"
+  else
+    warn "No media copied — no standard folders found or all pulls failed. Do NOT reset the device yet."
+    return 1
+  fi
 }
 
 open_url() {
