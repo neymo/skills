@@ -4,13 +4,13 @@
 # ---------------------------------------------------------------------------
 # Configure a fresh Ubuntu install running on WSL2 (including the WSL "preview"
 # / Store build) as a full development box that you can also reach over RDP or
-# VNC with a real Linux desktop (XFCE).
+# VNC with a real Linux desktop (MATE by default; GNOME or XFCE optional).
 #
 # What it does:
 #   * Enables systemd + a few sensible WSL defaults in /etc/wsl.conf
 #   * Updates the system and installs a broad set of developer tooling
 #     (build toolchains, languages, CLI utilities, containers helpers, ...)
-#   * Installs the XFCE desktop environment
+#   * Installs a desktop environment (MATE, GNOME, or XFCE)
 #   * Sets up remote access:
 #       - RDP  via xrdp        (default port 3339)
 #       - VNC  via TigerVNC    (default display :1  -> port 5901)
@@ -25,6 +25,7 @@
 #   ./wsl2-ubuntu-setup.sh --no-vnc        # skip VNC
 #   ./wsl2-ubuntu-setup.sh --no-rdp        # skip RDP
 #   ./wsl2-ubuntu-setup.sh --minimal       # dev tools only, no desktop/remote
+#   ./wsl2-ubuntu-setup.sh --desktop gnome # choose mate (default) | gnome | xfce
 #   ./wsl2-ubuntu-setup.sh --rdp-port 3389 # override the RDP port
 #   ./wsl2-ubuntu-setup.sh --help
 #
@@ -40,7 +41,9 @@ set -euo pipefail
 RDP_PORT="${RDP_PORT:-3339}"      # xrdp listens here (avoids clashing with Windows' own 3389)
 VNC_DISPLAY="${VNC_DISPLAY:-1}"   # VNC display number -> TCP port 5900 + N
 VNC_GEOMETRY="${VNC_GEOMETRY:-1920x1080}"
-DESKTOP_SESSION_CMD="startxfce4"
+DESKTOP_ENV="${DESKTOP_ENV:-mate}"   # mate | gnome | xfce
+DESKTOP_SESSION_CMD=""                 # resolved from DESKTOP_ENV below
+DESKTOP_PKGS=()
 
 DO_DEVTOOLS=1
 DO_DESKTOP=1
@@ -74,6 +77,7 @@ while [[ $# -gt 0 ]]; do
     --no-rdp)      DO_RDP=0 ;;
     --no-vnc)      DO_VNC=0 ;;
     --minimal)     DO_DESKTOP=0; DO_RDP=0; DO_VNC=0 ;;
+    --desktop)     DESKTOP_ENV="${2:?--desktop needs a value (mate|gnome|xfce)}"; shift ;;
     --rdp-port)    RDP_PORT="${2:?--rdp-port needs a value}"; shift ;;
     --vnc-display) VNC_DISPLAY="${2:?--vnc-display needs a value}"; shift ;;
     --geometry)    VNC_GEOMETRY="${2:?--geometry needs a value}"; shift ;;
@@ -252,14 +256,46 @@ install_rust() {
 }
 
 # ---------------------------------------------------------------------------
-# Step 3: XFCE desktop
+# Step 3: Desktop environment (MATE / GNOME / XFCE)
 # ---------------------------------------------------------------------------
+# Map the chosen DESKTOP_ENV to its package list and session-launch command.
+resolve_desktop() {
+  DESKTOP_ENV="${DESKTOP_ENV,,}"
+  case "$DESKTOP_ENV" in
+    mate)
+      DESKTOP_PKGS=(mate-desktop-environment mate-desktop-environment-extras mate-terminal)
+      DESKTOP_SESSION_CMD="mate-session" ;;
+    gnome)
+      # Xorg GNOME session (Wayland does not work through xrdp/VNC).
+      DESKTOP_PKGS=(ubuntu-gnome-desktop gnome-session gnome-shell gnome-terminal)
+      DESKTOP_SESSION_CMD="gnome-session" ;;
+    xfce)
+      DESKTOP_PKGS=(xfce4 xfce4-goodies xfce4-terminal)
+      DESKTOP_SESSION_CMD="startxfce4" ;;
+    *)
+      die "Unknown --desktop '$DESKTOP_ENV' (choose mate | gnome | xfce)" ;;
+  esac
+}
+
+# Extra environment exports a session needs (GNOME on Xorg via xrdp/VNC).
+# Prints zero or more `export ...` lines on stdout.
+desktop_exports() {
+  case "$DESKTOP_ENV" in
+    gnome)
+      echo "export XDG_CURRENT_DESKTOP=ubuntu:GNOME"
+      echo "export XDG_SESSION_TYPE=x11"
+      echo "export GNOME_SHELL_SESSION_MODE=ubuntu" ;;
+    *) : ;;
+  esac
+}
+
 install_desktop() {
-  log "Installing XFCE desktop environment"
-  apt_install xfce4 xfce4-goodies xfce4-terminal dbus-x11 x11-xserver-utils \
-    fonts-dejavu fonts-liberation policykit-1 xdg-utils \
-    firefox || warn "some desktop packages were skipped"
-  ok "XFCE installed"
+  log "Installing ${DESKTOP_ENV^^} desktop environment"
+  # Shared X plumbing needed for headless RDP/VNC sessions regardless of DE.
+  apt_install dbus-x11 x11-xserver-utils fonts-dejavu fonts-liberation \
+    policykit-1 xdg-utils firefox || warn "some shared desktop packages were skipped"
+  apt_install "${DESKTOP_PKGS[@]}" || warn "some ${DESKTOP_ENV} packages were skipped"
+  ok "${DESKTOP_ENV^^} installed"
 }
 
 # Silence the polkit "Authentication is required to create a color profile"
@@ -301,8 +337,12 @@ setup_rdp() {
   log "Setting up xrdp (RDP) on port ${RDP_PORT}"
   apt_install xrdp
 
-  # Point every login at XFCE.
-  echo "$DESKTOP_SESSION_CMD" > "$HOME/.xsession"
+  # Point every login at the chosen desktop session.
+  {
+    echo "#!/bin/sh"
+    desktop_exports
+    echo "exec $DESKTOP_SESSION_CMD"
+  } > "$HOME/.xsession"
   chmod 0644 "$HOME/.xsession"
 
   # xrdp runs as the 'xrdp' user; let it read the ssl cert.
@@ -311,7 +351,7 @@ setup_rdp() {
   # Change the listen port (avoids clashing with the Windows host's own 3389).
   $SUDO sed -i "s/^port=.*/port=${RDP_PORT}/" /etc/xrdp/xrdp.ini
 
-  # Make the WM launch XFCE via the user's .xsession.
+  # Make the WM launch the chosen desktop via the user's .xsession.
   if [[ -f /etc/xrdp/startwm.sh ]]; then
     $SUDO sed -i 's/^test -x \/etc\/X11\/Xsession.*/#&/' /etc/xrdp/startwm.sh 2>/dev/null || true
     $SUDO sed -i 's/^exec \/etc\/X11\/Xsession.*/#&/'    /etc/xrdp/startwm.sh 2>/dev/null || true
@@ -340,6 +380,7 @@ setup_vnc() {
 unset SESSION_MANAGER
 unset DBUS_SESSION_BUS_ADDRESS
 export XKL_XMODMAP_DISABLE=1
+$(desktop_exports)
 [ -r "\$HOME/.Xresources" ] && xrdb "\$HOME/.Xresources"
 dbus-launch --exit-with-session ${DESKTOP_SESSION_CMD}
 EOF
@@ -400,6 +441,7 @@ main() {
   [[ $DO_DEVTOOLS -eq 1 ]] && install_devtools
 
   if [[ $DO_DESKTOP -eq 1 ]]; then
+    resolve_desktop
     install_desktop
     install_polkit_fixes
     [[ $DO_RDP -eq 1 ]] && setup_rdp
