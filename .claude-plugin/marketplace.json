@@ -17,7 +17,8 @@
         "./skills/setup",
         "./skills/domains",
         "./skills/reseller-api",
-        "./skills/windows-11-hardening"
+        "./skills/windows-11-hardening",
+        "./skills/android-device-recovery"
       ]
     }
   ]
